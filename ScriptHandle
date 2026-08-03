@@ -1,0 +1,72 @@
+local Handle = script.Parent
+local Tool = Handle.Parent
+
+local ClickDetector = Handle:FindFirstChildOfClass("ClickDetector")
+local ProximityPrompt = Handle:FindFirstChildOfClass("ProximityPrompt")
+
+--------------------------------------------------------------------------------------------------------
+-- FUNCIÓN CENTRAL DE RECOGIDA DIRECTA A LA MOCHILA (CON LIMPIEZA DE FÍSICAS)
+--------------------------------------------------------------------------------------------------------
+local function pickupTool(player)
+	if not player then return end
+	local backpack = player:FindFirstChild("Backpack")
+
+	if backpack then
+		-- 1. Desactivar las interacciones inmediatamente para evitar ejecuciones dobles
+		if ProximityPrompt then ProximityPrompt.Enabled = false end
+		if ClickDetector then ClickDetector.MaxActivationDistance = 0 end
+
+		-- 2. [SOLUCIÓN AL ANCLAJE]: Destruir inmediatamente el estabilizador de caída si existe
+		local stabilizer = Handle:FindFirstChild("DropStabilizer")
+		if stabilizer then 
+			stabilizer:Destroy() 
+		end
+
+		-- 3. Resetear por completo las velocidades físicas para que el objeto no pese ni arrastre al jugador
+		Handle.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+		Handle.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+
+		-- 4. Desactivar colisiones momentáneamente para que el traspaso sea 100% limpio
+		Handle.CanCollide = false
+		for _, subObject in ipairs(Handle:GetDescendants()) do
+			if subObject:IsA("BasePart") then
+				subObject.CanCollide = false
+			end
+		end
+
+		-- 5. Restaurar CanTouch requerido para el inventario
+		Handle.CanTouch = true 
+
+		-- 6. Enviamos el objeto directamente a la mochila del inventario de forma segura
+		Tool.Parent = backpack
+	end
+end
+
+--------------------------------------------------------------------------------------------------------
+-- CONTROLADORES DE INTERACCIÓN
+--------------------------------------------------------------------------------------------------------
+if ClickDetector then 
+	ClickDetector.MouseClick:Connect(pickupTool) 
+end
+
+if ProximityPrompt then 
+	ProximityPrompt.Triggered:Connect(pickupTool) 
+end
+
+--------------------------------------------------------------------------------------------------------
+-- CONTROLADORES DE ESTADO (REACTIVACIÓN EN SUELO)
+--------------------------------------------------------------------------------------------------------
+Tool.Equipped:Connect(function()
+	if ClickDetector then ClickDetector.MaxActivationDistance = 0 end
+	if ProximityPrompt then ProximityPrompt.Enabled = false end
+end)
+
+Tool.Unequipped:Connect(function()
+	task.defer(function()
+		-- Si la herramienta vuelve a caer al mundo (suelo), reactivamos los sistemas
+		if Tool:IsDescendantOf(workspace) then
+			if ClickDetector then ClickDetector.MaxActivationDistance = 32 end 
+			if ProximityPrompt then ProximityPrompt.Enabled = true end
+		end
+	end)
+end)

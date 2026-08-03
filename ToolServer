@@ -1,0 +1,693 @@
+local Tool = script.Parent
+local Handle = Tool:WaitForChild("Handle")
+local RemoteEvent = Tool:WaitForChild("ToolEvent")
+local EffectsFolder = Tool:FindFirstChild("Efectos")
+
+-- Servicios del Motor
+local TestService = game:GetService("TestService")
+local ServerStorage = game:GetService("ServerStorage")
+local Players = game:GetService("Players")
+
+local dropAttachment = Handle:FindFirstChild("DropAttachment")
+if not dropAttachment then
+	dropAttachment = Instance.new("Attachment")
+	dropAttachment.Name = "DropAttachment"
+	dropAttachment.Parent = Handle
+end
+
+--------------------------------------------------------------------------------------------------------
+--  [ZONA DE CONFIGURACIÓN BASE]
+--------------------------------------------------------------------------------------------------------
+local CONFIG = {
+	DestroyOnUse = false,   -- 'true' para consumibles que se gastan al usarse
+	UsosMaximos = 1,       -- Cantidad de usos permitidos antes de destruirse (Solo si DestroyOnUse = true)
+	EnableLogs = true,     -- 'false' apaga prints normales (Las alertas de seguridad SIEMPRE se verán)
+
+	-- =========================================================================================
+	--  TABLA DE ACCIONES DINÁMICAS
+	-- =========================================================================================
+	Acciones = {
+		--CUANDO HACES CLICK
+		["Activate"] = {       
+			-- [Tiempos de acción y cooldown]
+			Timing = { ActionTime = 2, Cooldown = 1 },-- Tiempos en segundos de acción y cooldown 
+			Efectos = {
+				
+				--[Efectos aplicados al jugador que activa la herramienta]
+				Personal = { 
+					--Efecto de curación 
+					CuracionActiva = false, ---Activar o desactivar true/false
+					Curacion = 20,---Valor de curación
+
+                    --Efecto de velocidade	
+					VelocidadActiva = true, ---Activar o desactivar 
+					VelocidadAumento = 16, ---Valor de la velocidad
+					VelocidadDuracion = 5, ---Duración en segundos
+
+                    --Efecto de salto
+					SaltoActivo = false,
+					SaltoAumento = 35,
+					SaltoDuracion = 5,
+					
+					DanoContactoActivo = false, 
+					DanoContacto = 40,   --Cantidad de daño aplicado          
+					DanoContactoDuracion = 1, --Tiempo que dura el efecto en hacer daño
+				},
+				
+	            --[Efectos aplicados a jugadores cercanos (dentro de un radio)]
+				OtrosJugadores = { 
+					DanoContactoActivo = false,
+					DanoContacto = 40,             
+					DanoContactoDuracion = 1,    
+                    
+					EmpujeActivo = false,
+					EmpujeFuerza = 500,
+
+					RalentizarActivo = false,
+					RalentizarPorcentaje = 0.5,
+					RalentizarDuracion = 5,
+
+					CongelarActivo = false,
+					CongelarDuracion = 5,
+				}
+			}
+		},
+		
+		--CUANDO PULSAS SOLAMENTE CON LA TECLA ESTABLECIDA (E)
+		["PressKey"] = {          
+			-- [Tiempos de acción y cooldown]
+			Timing = { ActionTime = 0.5, Cooldown = 3.5 },
+			
+			--[Efectos aplicados al jugador que activa la herramienta]
+			Efectos = {
+				Personal = {
+				
+				   --VelocidadActiva = true,
+					--VelocidadAumento = 16,
+					--VelocidadDuracion = 5,
+
+				},
+			--[Efectos aplicados a jugadores cercanos (dentro de un radio)]
+				OtrosJugadores = {
+					
+					--EmpujeActivo = false,
+					--EmpujeFuerza = 500,
+
+				}
+			}
+		}
+	}
+}
+
+-- Variables de Estado y Seguridad
+local cooldownExpiracion = 0
+local initialRotation = Handle.CFrame.Rotation
+local yaDestruido = false 
+
+local usosRestantes = Tool:GetAttribute("UsosRestantes") or CONFIG.UsosMaximos or 1
+local historialFaltas = {}
+local tiempoDesbloqueo = {}
+local ultimoWarnTiempo = {}
+
+-- Control de colisiones dañinas
+local conexionContacto = nil
+local jugadoresTocados = {}
+
+--------------------------------------------------------------------------------------------------------
+-- FUNCIÓN AUXILIAR DE LIMPIEZA INMEDIATA DE STATS
+--------------------------------------------------------------------------------------------------------
+local function limpiarEfectosStats(humanoid)
+	if not humanoid or not humanoid.Parent then return end
+
+	-- Limpieza de Velocidad
+	local aumentoVel = humanoid:GetAttribute("VelocidadAplicada")
+	if aumentoVel then
+		humanoid.WalkSpeed = math.max(16, humanoid.WalkSpeed - aumentoVel)
+		humanoid:SetAttribute("VelocidadAplicada", nil)
+		humanoid:SetAttribute("VelocidadToken", nil)
+	end
+
+	-- Limpieza de Salto
+	local aumentoSalto = humanoid:GetAttribute("SaltoAplicado")
+	if aumentoSalto then
+		if humanoid.UseJumpPower then
+			humanoid.JumpPower = math.max(50, humanoid.JumpPower - aumentoSalto)
+		else
+			humanoid.JumpHeight = math.max(7.2, humanoid.JumpHeight - aumentoSalto)
+		end
+		humanoid:SetAttribute("SaltoAplicado", nil)
+		humanoid:SetAttribute("SaltoToken", nil)
+	end
+end
+
+--------------------------------------------------------------------------------------------------------
+-- [SISTEMA UNIFICADO DE COMPORTAMIENTOS E INTERACCIONES]
+--------------------------------------------------------------------------------------------------------
+local COMPORTAMIENTOS = {
+
+	Curacion = function(targetCharacter, origenCharacter, subTabla)
+		if not subTabla.CuracionActiva then return end
+		local valor = subTabla.Curacion or 0
+		if valor <= 0 then return end
+
+		local humanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			humanoid.Health = math.min(humanoid.Health + valor, humanoid.MaxHealth)
+		end
+	end,
+
+	VelocidadAumento = function(targetCharacter, origenCharacter, subTabla)
+		if not subTabla.VelocidadActiva then return end
+		local valor = subTabla.VelocidadAumento or 0
+		if valor <= 0 then return end
+
+		local humanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
+		if not humanoid then return end
+
+		local duracion = subTabla.VelocidadDuracion or 0
+
+		if not humanoid:GetAttribute("VelocidadAplicada") then
+			humanoid:SetAttribute("VelocidadAplicada", valor)
+			humanoid.WalkSpeed += valor
+		end
+
+		local token = (humanoid:GetAttribute("VelocidadToken") or 0) + 1
+		humanoid:SetAttribute("VelocidadToken", token)
+
+		if duracion > 0 then
+			task.delay(duracion, function()
+				if humanoid and humanoid.Parent and humanoid:GetAttribute("VelocidadToken") == token then
+					local aumentoAplicado = humanoid:GetAttribute("VelocidadAplicada") or valor
+					humanoid.WalkSpeed = math.max(16, humanoid.WalkSpeed - aumentoAplicado)
+					humanoid:SetAttribute("VelocidadAplicada", nil)
+				end
+			end)
+		end
+	end,
+
+	SaltoAumento = function(targetCharacter, origenCharacter, subTabla)
+		if not subTabla.SaltoActivo then return end
+		local valor = subTabla.SaltoAumento or 0
+		if valor <= 0 then return end
+
+		local humanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
+		if not humanoid then return end
+
+		local duracion = subTabla.SaltoDuracion or 0
+
+		if not humanoid:GetAttribute("SaltoAplicado") then
+			humanoid:SetAttribute("SaltoAplicado", valor)
+			if humanoid.UseJumpPower then
+				humanoid.JumpPower += valor
+			else
+				humanoid.JumpHeight += valor
+			end
+		end
+
+		local token = (humanoid:GetAttribute("SaltoToken") or 0) + 1
+		humanoid:SetAttribute("SaltoToken", token)
+
+		if duracion > 0 then
+			task.delay(duracion, function()
+				if humanoid and humanoid.Parent and humanoid:GetAttribute("SaltoToken") == token then
+					local aumentoAplicado = humanoid:GetAttribute("SaltoAplicado") or valor
+					if humanoid.UseJumpPower then
+						humanoid.JumpPower = math.max(50, humanoid.JumpPower - aumentoAplicado)
+					else
+						humanoid.JumpHeight = math.max(7.2, humanoid.JumpHeight - aumentoAplicado)
+					end
+					humanoid:SetAttribute("SaltoAplicado", nil)
+				end
+			end)
+		end
+	end,
+
+	DanoContacto = function(targetCharacter, origenCharacter, subTabla)
+		if not subTabla.DanoContactoActivo then return end
+		local valor = subTabla.DanoContacto or 0
+		if valor <= 0 then return end
+
+		local humanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
+		if not humanoid or humanoid.Health <= 0 then return end
+
+		local duracion = subTabla.DanoContactoDuracion or 0
+
+		if duracion <= 0 then
+			humanoid:TakeDamage(valor)
+		else
+			local tics = math.max(1, math.floor(duracion))
+			local danoPorTic = valor / tics
+
+			task.spawn(function()
+				for i = 1, tics do
+					if humanoid and humanoid.Parent and humanoid.Health > 0 then
+						humanoid:TakeDamage(danoPorTic)
+						task.wait(1)
+					else
+						break
+					end
+				end
+			end)
+		end
+	end,
+
+	Empuje = function(targetCharacter, origenCharacter, subTabla)
+		if not subTabla.EmpujeActivo then return end
+		local fuerza = subTabla.EmpujeFuerza or 50
+		if fuerza <= 0 then return end
+
+		local targetHRP = targetCharacter:FindFirstChild("HumanoidRootPart")
+		local origenHRP = origenCharacter and origenCharacter:FindFirstChild("HumanoidRootPart")
+
+		if targetHRP then
+			local direccion
+			if origenHRP and origenHRP ~= targetHRP then
+				direccion = (targetHRP.Position - origenHRP.Position).Unit
+			else
+				direccion = targetHRP.CFrame.LookVector
+			end
+
+			local targetPlayer = Players:GetPlayerFromCharacter(targetCharacter)
+
+			if targetPlayer then
+				pcall(function() targetHRP:SetNetworkOwner(nil) end)
+				targetHRP.AssemblyLinearVelocity = (direccion + Vector3.new(0, 0.5, 0)).Unit * fuerza
+
+				task.delay(0.2, function()
+					if targetHRP and targetHRP.Parent and targetPlayer:IsDescendantOf(Players) then
+						pcall(function() targetHRP:SetNetworkOwner(targetPlayer) end)
+					end
+				end)
+			else
+				targetHRP.AssemblyLinearVelocity = (direccion + Vector3.new(0, 0.5, 0)).Unit * fuerza
+			end
+		end
+	end,
+
+	Ralentizar = function(targetCharacter, origenCharacter, subTabla)
+		if not subTabla.RalentizarActivo then return end
+		local porcentaje = math.clamp(subTabla.RalentizarPorcentaje or 0.5, 0, 1)
+		local duracion = subTabla.RalentizarDuracion or 3
+
+		local targetHumanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
+		if not targetHumanoid then return end
+
+		if not targetHumanoid:GetAttribute("Ralentizado") then
+			targetHumanoid:SetAttribute("Ralentizado", true)
+			local velOriginal = targetHumanoid.WalkSpeed
+			targetHumanoid.WalkSpeed = velOriginal * (1 - porcentaje)
+
+			task.delay(duracion, function()
+				if targetHumanoid and targetHumanoid.Parent then
+					targetHumanoid.WalkSpeed = velOriginal
+					targetHumanoid:SetAttribute("Ralentizado", nil)
+				end
+			end)
+		end
+	end,
+
+	Congelar = function(targetCharacter, origenCharacter, subTabla)
+		if not subTabla.CongelarActivo then return end
+		local duracion = subTabla.CongelarDuracion or 2
+
+		local targetHumanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
+		if not targetHumanoid then return end
+
+		if not targetHumanoid:GetAttribute("Congelado") then
+			targetHumanoid:SetAttribute("Congelado", true)
+			local velOriginal = targetHumanoid.WalkSpeed
+			local saltoOriginalPower = targetHumanoid.JumpPower
+			local saltoOriginalHeight = targetHumanoid.JumpHeight
+
+			targetHumanoid.WalkSpeed = 0
+			targetHumanoid.JumpPower = 0
+			targetHumanoid.JumpHeight = 0
+
+			task.delay(duracion, function()
+				if targetHumanoid and targetHumanoid.Parent then
+					targetHumanoid.WalkSpeed = velOriginal
+					targetHumanoid.JumpPower = saltoOriginalPower
+					targetHumanoid.JumpHeight = saltoOriginalHeight
+					targetHumanoid:SetAttribute("Congelado", nil)
+				end
+			end)
+		end
+	end,
+}
+
+--------------------------------------------------------------------------------------------------------
+-- CACHÉ PARA EFECTOS VISUALES Y SONOROS (PROBLEMA 1 SOLUCIONADO)
+--------------------------------------------------------------------------------------------------------
+
+local CACHE_VISUAL = { Equipar = {}, Desequipar = {}, Activar = {}, Teclear = {}, Soltar = {}, Destruirse = {} }
+if EffectsFolder then
+	for nombreCarpeta, tablaCache in pairs(CACHE_VISUAL) do
+		local carpeta = EffectsFolder:FindFirstChild(nombreCarpeta)
+		if carpeta then
+			for _, emisor in ipairs(carpeta:GetDescendants()) do
+				if emisor:IsA("ParticleEmitter") or emisor:IsA("Beam") or emisor:IsA("Trail") or emisor:IsA("Light") or emisor:IsA("Highlight") then
+					emisor.Enabled = false
+					table.insert(tablaCache, emisor)
+				end
+			end
+		end
+	end
+end
+
+local function runFolderEffects(folderName, ignoreSound) 
+	if folderName == "Destruirse" then return end
+	if not EffectsFolder then return end
+
+	local folder = EffectsFolder:FindFirstChild(folderName)
+	if folder and not ignoreSound then
+		for _, object in ipairs(folder:GetDescendants()) do
+			if object:IsA("Sound") then
+				local soundClone = object:Clone()
+				soundClone.Name = "ToolSound_" .. folderName .. "_" .. object.Name
+				soundClone.Parent = Handle
+				soundClone:Play()
+				soundClone.Ended:Connect(function() soundClone:Destroy() end)
+			end
+		end
+	end
+	local componentesVisuales = CACHE_VISUAL[folderName]
+	if componentesVisuales then for _, emisor in ipairs(componentesVisuales) do emisor.Enabled = true end end
+end
+
+local function stopFolderEffects(folderName) 
+	local componentesVisuales = CACHE_VISUAL[folderName]
+	if componentesVisuales then for _, emisor in ipairs(componentesVisuales) do emisor.Enabled = false end end
+	for _, child in ipairs(Handle:GetChildren()) do
+		if child.Name:sub(1, 10) == "ToolSound_" .. folderName then child:Destroy() end
+	end
+end
+
+local function clearAllEffects()
+	for _, componentesVisuales in pairs(CACHE_VISUAL) do for _, emisor in ipairs(componentesVisuales) do emisor.Enabled = false end end
+	for _, child in ipairs(Handle:GetChildren()) do if child.Name:sub(1, 10) == "ToolSound_" then child:Destroy() end end
+end
+
+local function changeToolCollisions(state) 
+	local tieneInteraccion = Handle:FindFirstChildOfClass("ProximityPrompt") or Handle:FindFirstChildOfClass("ClickDetector")
+	if Handle:IsA("BasePart") then Handle.CanCollide = state Handle.CanTouch = not (state == true and tieneInteraccion) end
+	for _, subObject in ipairs(Handle:GetDescendants()) do
+		if subObject:IsA("BasePart") then subObject.CanCollide = state subObject.CanTouch = not (state == true and tieneInteraccion) end
+	end
+end
+
+local function ejecutarEfectosDinamicos(character, configuracionAccion)
+	local efectos = configuracionAccion.Efectos
+	if not efectos then return end
+
+	-- 1. Aplicar Efectos Personales
+	if efectos.Personal then
+		for _, funcionComportamiento in pairs(COMPORTAMIENTOS) do
+			funcionComportamiento(character, character, efectos.Personal)
+		end
+	end
+
+	-- 2. Aplicar Efectos a Otros Jugadores
+	if efectos.OtrosJugadores then
+		local otrosTabla = efectos.OtrosJugadores
+
+		local tiempoContacto = math.max(
+			otrosTabla.DanoContactoDuracion or 0,
+			otrosTabla.RalentizarDuracion or 0,
+			otrosTabla.CongelarDuracion or 0,
+			0.5
+		)
+
+		if conexionContacto then 
+			conexionContacto:Disconnect() 
+			conexionContacto = nil
+		end
+		table.clear(jugadoresTocados)
+
+		conexionContacto = Handle.Touched:Connect(function(hitPart)
+			local targetCharacter = hitPart.Parent
+			if not targetCharacter or targetCharacter == character then return end
+
+			local targetHumanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
+			if not targetHumanoid or targetHumanoid.Health <= 0 then return end
+
+			if not jugadoresTocados[targetHumanoid] then
+				jugadoresTocados[targetHumanoid] = true
+
+				for _, funcionComportamiento in pairs(COMPORTAMIENTOS) do
+					funcionComportamiento(targetCharacter, character, otrosTabla)
+				end
+			end
+		end)
+
+		task.delay(tiempoContacto, function()
+			if conexionContacto then
+				conexionContacto:Disconnect()
+				conexionContacto = nil
+			end
+			table.clear(jugadoresTocados)
+		end)
+	end
+end
+
+--------------------------------------------------------------------------------------------------------
+-- LÓGICA PRINCIPAL (PROCESADOR SEGURO DE EVENTOS REMOTOS)
+--------------------------------------------------------------------------------------------------------
+RemoteEvent.OnServerEvent:Connect(function(player, actionType) 
+	local character = player.Character
+	if not character then return end
+
+	local datosAccion = CONFIG.Acciones[actionType]
+	if not datosAccion then return end 
+	if yaDestruido then return end
+
+	--------------------------------------------------------------------------------------------------------
+	-- SISTEMA DE SEGURIDAD Y ALERTAS
+	--------------------------------------------------------------------------------------------------------
+	local userId = player.UserId
+	local tiempoActual = os.clock()
+	local antiguedadCuenta = player.AccountAge or 0
+
+	if tiempoDesbloqueo[userId] and tiempoActual < tiempoDesbloqueo[userId] then
+		return
+	end
+
+	if tiempoActual < cooldownExpiracion then 
+		if not historialFaltas[userId] then historialFaltas[userId] = 0 end
+		historialFaltas[userId] += 1 
+
+		if not ultimoWarnTiempo[userId] or (tiempoActual - ultimoWarnTiempo[userId]) >= 1 then
+			ultimoWarnTiempo[userId] = tiempoActual
+			TestService:Warn(false, string.format(
+				"[SEGURIDAD]: Jugador '%s' (ID: %d | Antigüedad: %d días) intentó saltarse el cooldown. [Falta: %d/3]",
+				player.Name,
+				userId,
+				antiguedadCuenta,
+				historialFaltas[userId]
+				))
+		end
+
+		-- PROBLEMA 3 SOLUCIONADO: Cancelar efectos inmediatos al ser penalizado
+		if historialFaltas[userId] >= 3 then
+			tiempoDesbloqueo[userId] = tiempoActual + 300 
+			historialFaltas[userId] = 0 
+
+			local hum = character:FindFirstChildOfClass("Humanoid")
+			if hum then
+				limpiarEfectosStats(hum)
+			end
+
+			TestService:Warn(false, string.format(
+				"[SEGURIDAD - BLOQUEO]: Jugador '%s' (ID: %d) ha acumulado 3 faltas. Herramienta BLOQUEADA por 5 minutos.",
+				player.Name,
+				userId
+				))
+		end
+		return 
+	end
+
+	--------------------------------------------------------------------------------------------------------
+	-- PROCESO DE ACCIÓN
+	--------------------------------------------------------------------------------------------------------
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then return end
+	if not Tool:IsDescendantOf(character) then return end
+
+	local currentTiming = datosAccion.Timing
+	cooldownExpiracion = os.clock() + currentTiming.ActionTime + currentTiming.Cooldown
+
+	script:SetAttribute("OnCooldown", true)
+	task.delay(currentTiming.ActionTime + currentTiming.Cooldown, function()
+		if os.clock() >= cooldownExpiracion and not yaDestruido then
+			script:SetAttribute("OnCooldown", false)
+		end
+	end)
+
+	local targetFolder = (actionType == "Activate") and "Activar" or "Teclear"
+	runFolderEffects(targetFolder)
+
+	task.wait(currentTiming.ActionTime)
+
+	if not Tool:IsDescendantOf(character) then
+		stopFolderEffects(targetFolder)
+		return
+	end
+
+	stopFolderEffects(targetFolder) 
+
+	if character and humanoid and humanoid.Health > 0 and Tool:IsDescendantOf(character) then
+		ejecutarEfectosDinamicos(character, datosAccion)
+
+		if CONFIG.DestroyOnUse then
+			usosRestantes -= 1
+			Tool:SetAttribute("UsosRestantes", usosRestantes) 
+		end
+		if CONFIG.EnableLogs then 
+			print(string.format("[%s]: Acción '%s' completada. (Usos restantes: %s)", Tool.Name, actionType, CONFIG.DestroyOnUse and tostring(usosRestantes) or "Infinitos")) 
+		end
+	end
+
+	--------------------------------------------------------------------------------------------------------
+	-- DESTRUCCIÓN TEMPORIZADA CON EFECTOS POST-DESTRUCCIÓN ("Destruirse")
+	--------------------------------------------------------------------------------------------------------
+	if CONFIG.DestroyOnUse and usosRestantes <= 0 then
+		yaDestruido = true 
+		script:SetAttribute("OnCooldown", true)
+		clearAllEffects()
+
+		local posicionActual = Handle.CFrame
+		local targetCharacter = character
+		local targetHumanoid = humanoid
+
+		Tool.Parent = ServerStorage
+
+		local nodoDestruccion = Instance.new("Part")
+		nodoDestruccion.Name = "NodoEfectoDestruccion"
+		nodoDestruccion.Size = Vector3.new(1, 1, 1)
+		nodoDestruccion.CFrame = posicionActual
+		nodoDestruccion.Anchored = true
+		nodoDestruccion.CanCollide = false
+		nodoDestruccion.Transparency = 1
+		nodoDestruccion.Parent = workspace
+
+		local tiempoDuracionSonido = 0
+		local carpetaDestruirse = EffectsFolder and EffectsFolder:FindFirstChild("Destruirse")
+
+		if carpetaDestruirse then
+			-- Clonar la carpeta completa con sus Attachments y descendientes
+			for _, objeto in ipairs(carpetaDestruirse:GetChildren()) do
+				local clon = objeto:Clone()
+				clon.Parent = nodoDestruccion
+			end
+
+			-- Activar DE INMEDIATO todas las partículas, luces y highlights (incluyendo los de Attachments)
+			for _, descendiente in ipairs(nodoDestruccion:GetDescendants()) do
+				if descendiente:IsA("ParticleEmitter") then
+					descendiente.Enabled = true
+					local cantidadEmitir = descendiente:GetAttribute("EmitCount") or 20
+					descendiente:Emit(cantidadEmitir)
+				elseif descendiente:IsA("Light") or descendiente:IsA("Highlight") or descendiente:IsA("Beam") or descendiente:IsA("Trail") then
+					descendiente.Enabled = true
+				elseif descendiente:IsA("Sound") then
+					descendiente:Play()
+					if descendiente.TimeLength > tiempoDuracionSonido then
+						tiempoDuracionSonido = descendiente.TimeLength
+					end
+				end
+			end
+		end
+
+		-- Calcular tiempos de espera
+		local pers = datosAccion.Efectos.Personal or {}
+		local velDur = pers.VelocidadActiva and (pers.VelocidadDuracion or 0) or 0
+		local saltoDur = pers.SaltoActivo and (pers.SaltoDuracion or 0) or 0
+		local tiempoMaximoBuffs = math.max(velDur, saltoDur)
+
+		local tiempoEsperaEfectos = math.max(0.5, tiempoDuracionSonido) -- Por defecto 0.5 segundos
+
+		-- Esperar a que concluyan las partículas/sonidos de destrucción
+		task.wait(tiempoEsperaEfectos)
+
+		-- Apagar de inmediato todas las partículas y luces antes de eliminar la parte
+		for _, descendiente in ipairs(nodoDestruccion:GetDescendants()) do
+			if descendiente:IsA("ParticleEmitter") or descendiente:IsA("Light") or descendiente:IsA("Highlight") or descendiente:IsA("Beam") or descendiente:IsA("Trail") then
+				descendiente.Enabled = false
+			end
+		end
+
+		-- Si las duraciones de los buffs superan el efecto de destrucción, se espera el remanente
+		if tiempoMaximoBuffs > tiempoEsperaEfectos then
+			task.wait(tiempoMaximoBuffs - tiempoEsperaEfectos)
+		end
+
+		-- Limpieza forzada de stats y eliminación del nodo temporal
+		limpiarEfectosStats(targetHumanoid)
+
+		nodoDestruccion:Destroy()
+		if conexionContacto then conexionContacto:Disconnect() end
+		if RemoteEvent then RemoteEvent:Destroy() end
+		Tool:Destroy() 
+		return 
+	end
+end)
+
+--------------------------------------------------------------------------------------------------------
+-- EVENTOS DE ENTORNO FÍSICO
+--------------------------------------------------------------------------------------------------------
+Tool.Equipped:Connect(function()
+	changeToolCollisions(false) 
+	local oldStabilizer = Handle:FindFirstChild("DropStabilizer")
+	if oldStabilizer then oldStabilizer:Destroy() end
+	Handle.AssemblyLinearVelocity = Vector3.zero
+	Handle.AssemblyAngularVelocity = Vector3.zero
+	clearAllEffects()
+	runFolderEffects("Equipar")
+end)
+
+Tool.Unequipped:Connect(function()
+	stopFolderEffects("Equipar")
+	clearAllEffects() 
+	if conexionContacto then conexionContacto:Disconnect() conexionContacto = nil end
+
+	task.defer(function()
+		if Tool:IsDescendantOf(workspace) then
+			Handle.CFrame = CFrame.new(Handle.Position) * initialRotation
+			local alignOrientation = Instance.new("AlignOrientation")
+			alignOrientation.Name = "DropStabilizer"
+			alignOrientation.Mode = Enum.OrientationAlignmentMode.OneAttachment 
+			alignOrientation.Attachment0 = dropAttachment 
+			alignOrientation.CFrame = initialRotation 
+			alignOrientation.MaxTorque = 100000       
+			alignOrientation.Responsiveness = 200     
+			alignOrientation.Parent = Handle
+			changeToolCollisions(true) 
+			runFolderEffects("Soltar") 
+			local conexionColision
+			conexionColision = Handle.Touched:Connect(function(hit)
+				if hit and not hit:IsDescendantOf(Players) and not hit.Parent:FindFirstChildOfClass("Humanoid") then
+					if alignOrientation then alignOrientation:Destroy() end
+					if conexionColision then conexionColision:Disconnect() end 
+				end
+			end)
+			task.delay(5, function()
+				if alignOrientation and alignOrientation.Parent then alignOrientation:Destroy() end
+				if conexionColision then conexionColision:Disconnect() end
+			end)
+		else
+			changeToolCollisions(false)
+			runFolderEffects("Desequipar")
+		end
+	end)
+end)
+
+clearAllEffects()
+if Tool:IsDescendantOf(workspace) and not Tool.Parent:FindFirstChildOfClass("Humanoid") then
+	changeToolCollisions(true) 
+	task.defer(function()
+		if Tool and Tool.Parent then
+			runFolderEffects("Soltar", true)
+			if Handle:IsA("BasePart") then Handle.AssemblyLinearVelocity = Vector3.new(0, 0.01, 0) end
+		end
+	end)
+else
+	changeToolCollisions(false)
+end

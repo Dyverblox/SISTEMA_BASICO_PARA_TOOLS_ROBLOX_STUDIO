@@ -1,0 +1,183 @@
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService") 
+local ContextActionService = game:GetService("ContextActionService")
+
+local Tool = script.Parent
+local RemoteEvent = Tool:WaitForChild("ToolEvent")
+local localPlayer = Players.LocalPlayer
+
+--------------------------------------------------------------------------------------------------------
+--  [CONFIGURACIÓN BASE DEL CLIENTE]
+--------------------------------------------------------------------------------------------------------
+local CONFIG = {
+	SelectedKey = Enum.KeyCode.E, -- Tecla para la acción secundaria
+	EnableLogs = true,            -- Desactivar al publicar el juego
+
+	Timing = {
+		Activate = { ActionTime = 0.5, Cooldown = 1 },
+		PressKey = { ActionTime = 0.5, Cooldown = 1 }
+	},
+
+	IDs = {
+		Equipar = nil,
+		Desequipar = nil,
+		Activate = "rbxassetid://121082437119737", 
+		PressKey = "rbxassetid://507776043" 
+	}
+}
+
+-- Estados locales
+local isEquipped = false
+local actionInProgress = false 
+local cooldownExpiracion = 0 
+local currentDelayThread = nil 
+
+--------------------------------------------------------------------------------------------------------
+--  GESTOR DE ANIMACIONES
+--------------------------------------------------------------------------------------------------------
+local function stopActionAnimations(humanoid) 
+	local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+	if not animator then return end
+
+	for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+		if track.Animation and track.Animation.AnimationId ~= "" then
+			local id = track.Animation.AnimationId
+			if id == CONFIG.IDs.Activate or id == CONFIG.IDs.PressKey or id == CONFIG.IDs.Equipar or id == CONFIG.IDs.Desequipar then
+				track:Stop(0.1) 
+				track:Destroy() 
+			end
+		end
+	end
+end
+
+local function playAnimation(actionType, humanoid) 
+	local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+	local idText = CONFIG.IDs[actionType]
+	if not animator or not idText or idText == "" or idText == "rbxassetid://" then return nil end
+
+	stopActionAnimations(humanoid)
+
+	local anim = Instance.new("Animation")
+	anim.AnimationId = idText
+
+	local track = animator:LoadAnimation(anim)
+	if track then
+		track.Looped = false
+		track:Play()
+		return track
+	end
+	return nil
+end
+
+--------------------------------------------------------------------------------------------------------
+--  INTERCEPTOR DEL BOTÓN DE SOLTAR (SINK DE TECLA DE ALTA PRIORIDAD)
+--------------------------------------------------------------------------------------------------------
+local function bloquearSoltado()
+	-- Absorbe por completo la pulsación de la tecla para que Roblox la ignore
+	return Enum.ContextActionResult.Sink
+end
+
+--------------------------------------------------------------------------------------------------------
+--  PROCESADOR ÚNICO DE ACCIONES
+--------------------------------------------------------------------------------------------------------
+local function ejecutarAccion(actionType) 
+	if not isEquipped or actionInProgress then return end
+
+	local tiempoActual = os.clock()
+	if tiempoActual < cooldownExpiracion then
+		if CONFIG.EnableLogs then 
+			print(string.format("[%s]: Bloqueado por Cooldown. Faltan %.2fs", Tool.Name, cooldownExpiracion - tiempoActual)) 
+		end
+		return 
+	end
+
+	local character = localPlayer.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then return end
+
+	local timing = CONFIG.Timing[actionType]
+	if not timing then return end
+
+	actionInProgress = true
+	cooldownExpiracion = tiempoActual + timing.ActionTime + timing.Cooldown
+
+	if CONFIG.EnableLogs then print("[" .. Tool.Name .. "]: Iniciando acción: " .. actionType) end
+
+	playAnimation(actionType, humanoid)
+
+	pcall(function()
+		RemoteEvent:FireServer(actionType)
+	end)
+
+	currentDelayThread = task.delay(timing.ActionTime, function()
+		stopActionAnimations(humanoid)
+		actionInProgress = false
+		currentDelayThread = nil
+	end)
+end
+
+--------------------------------------------------------------------------------------------------------
+--  CONEXIONES DE EVENTOS
+--------------------------------------------------------------------------------------------------------
+
+Tool.Activated:Connect(function()
+	ejecutarAccion("Activate")
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed or not isEquipped then return end 
+	if input.KeyCode == CONFIG.SelectedKey then
+		ejecutarAccion("PressKey")
+	end
+end)
+
+-- Equipar Herramienta
+Tool.Equipped:Connect(function()
+	isEquipped = true
+	actionInProgress = false
+
+	--  Enlazamos la tecla de soltar con la prioridad más alta para anular la función de Roblox
+	ContextActionService:BindActionAtPriority(
+		"BloquearDropSeguro", 
+		bloquearSoltado, 
+		false, 
+		20001, -- Prioridad ultra alta para ganarle a los scripts internos de Roblox
+		Enum.KeyCode.Backspace, 
+		Enum.KeyCode.ButtonX
+	)
+
+	local character = localPlayer.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		stopActionAnimations(humanoid)
+		playAnimation("Equipar", humanoid)
+	end
+end)
+
+-- Desequipar Herramienta
+Tool.Unequipped:Connect(function()
+	isEquipped = false
+	actionInProgress = false
+
+	--  Liberamos la tecla al guardarla
+	ContextActionService:UnbindAction("BloquearDropSeguro")
+
+	if currentDelayThread then
+		task.cancel(currentDelayThread)
+		currentDelayThread = nil
+	end
+
+	local character = localPlayer.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		stopActionAnimations(humanoid)
+		playAnimation("Desequipar", humanoid)
+	end
+end)
+
+Tool.Destroying:Connect(function()
+	isEquipped = false
+	actionInProgress = false
+	ContextActionService:UnbindAction("BloquearDropSeguro")
+	if currentDelayThread then task.cancel(currentDelayThread) end
+end)
