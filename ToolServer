@@ -1,3 +1,10 @@
+-- ============================================================================================================
+--                                       SISTEMA BÁSICO PARA TOOLS  
+-- RUTA: "Script dentro de la tool"                               AUTOR: "Dyverblox"                   
+-- SÍGUEME EN : INSTAGRAM: @Dyverblox  YOUTUBE: @Dyverblox
+-- ============================================================================================================
+
+local Handle = script.Parent
 local Tool = script.Parent
 local Handle = Tool:WaitForChild("Handle")
 local RemoteEvent = Tool:WaitForChild("ToolEvent")
