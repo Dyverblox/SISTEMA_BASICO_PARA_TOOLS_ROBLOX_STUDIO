@@ -48,7 +48,7 @@ local CONFIG = {
 					Curacion = 20,---Valor de curación
 
 					--Efecto de velocidad	
-					VelocidadActiva = true, ---Activar o desactivar 
+					VelocidadActiva = false, ---Activar o desactivar 
 					VelocidadAumento = 16, ---Valor de la velocidad
 					VelocidadDuracion = 3, ---Duración en segundos
 
@@ -64,7 +64,7 @@ local CONFIG = {
 
 				--[Efectos aplicados a jugadores cercanos (dentro de un radio)]
 				OtrosJugadores = { 
-					DanoContactoActivo = true,
+					DanoContactoActivo = false,
 					DanoContacto = 40,             
 					DanoContactoDuracion = 2,    
 
