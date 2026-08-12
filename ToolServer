@@ -1,6 +1,6 @@
 -- ============================================================================================================
---                                       SISTEMA BÁSICO PARA TOOLS  
--- RUTA: "Script dentro de la tool"                               AUTOR: "Dyverblox"                   
+--                                         SISTEMA BÁSICO PARA TOOLS  
+-- RUTA: "Script dentro de la tool"                               AUTOR: "Dyverblox"                    
 -- SÍGUEME EN : INSTAGRAM: @Dyverblox  YOUTUBE: @Dyverblox
 -- ============================================================================================================
 
@@ -27,8 +27,9 @@ end
 --------------------------------------------------------------------------------------------------------
 local CONFIG = {
 	DestroyOnUse = false,   -- 'true' para consumibles que se gastan al usarse
-	UsosMaximos = 1,       -- Cantidad de usos permitidos antes de destruirse (Solo si DestroyOnUse = true)
-	EnableLogs = true,     -- 'false' apaga prints normales (Las alertas de seguridad SIEMPRE se verán)
+	UsosMaximos = 1,        -- Cantidad de usos permitidos antes de destruirse (Solo si DestroyOnUse = true)
+	EnableLogs = true,      -- 'false' apaga prints normales (Las alertas de seguridad SIEMPRE se verán)
+	TiempoVentanaContacto = 0.5, -- Ventana EXACTA en segundos para registrar contactos
 
 	-- =========================================================================================
 	--  TABLA DE ACCIONES DINÁMICAS
@@ -37,36 +38,36 @@ local CONFIG = {
 		--CUANDO HACES CLICK
 		["Activate"] = {       
 			-- [Tiempos de acción y cooldown]
-			Timing = { ActionTime = 2, Cooldown = 1 },-- Tiempos en segundos de acción y cooldown 
+			Timing = { ActionTime = 1, Cooldown = 0.5 },-- Tiempos en segundos de acción y cooldown 
 			Efectos = {
-				
+
 				--[Efectos aplicados al jugador que activa la herramienta]
 				Personal = { 
 					--Efecto de curación 
 					CuracionActiva = false, ---Activar o desactivar true/false
 					Curacion = 20,---Valor de curación
 
-                    --Efecto de velocidade	
+					--Efecto de velocidad	
 					VelocidadActiva = true, ---Activar o desactivar 
 					VelocidadAumento = 16, ---Valor de la velocidad
-					VelocidadDuracion = 5, ---Duración en segundos
+					VelocidadDuracion = 3, ---Duración en segundos
 
-                    --Efecto de salto
+					--Efecto de salto
 					SaltoActivo = false,
 					SaltoAumento = 35,
 					SaltoDuracion = 5,
-					
+
 					DanoContactoActivo = false, 
 					DanoContacto = 40,   --Cantidad de daño aplicado          
 					DanoContactoDuracion = 1, --Tiempo que dura el efecto en hacer daño
 				},
-				
-	            --[Efectos aplicados a jugadores cercanos (dentro de un radio)]
+
+				--[Efectos aplicados a jugadores cercanos (dentro de un radio)]
 				OtrosJugadores = { 
-					DanoContactoActivo = false,
+					DanoContactoActivo = true,
 					DanoContacto = 40,             
-					DanoContactoDuracion = 1,    
-                    
+					DanoContactoDuracion = 2,    
+
 					EmpujeActivo = false,
 					EmpujeFuerza = 500,
 
@@ -79,24 +80,25 @@ local CONFIG = {
 				}
 			}
 		},
-		
+
 		--CUANDO PULSAS SOLAMENTE CON LA TECLA ESTABLECIDA (E)
 		["PressKey"] = {          
 			-- [Tiempos de acción y cooldown]
-			Timing = { ActionTime = 0.5, Cooldown = 3.5 },
-			
+			Timing = { ActionTime = 1, Cooldown = 0.5 },
+
 			--[Efectos aplicados al jugador que activa la herramienta]
 			Efectos = {
 				Personal = {
-				
-				   --VelocidadActiva = true,
+
+					--VelocidadActiva = true,
 					--VelocidadAumento = 16,
 					--VelocidadDuracion = 5,
 
 				},
-			--[Efectos aplicados a jugadores cercanos (dentro de un radio)]
+				--[Efectos aplicados a jugadores cercanos (dentro de un radio)]
 				OtrosJugadores = {
-					
+					 
+
 					--EmpujeActivo = false,
 					--EmpujeFuerza = 500,
 
@@ -343,7 +345,7 @@ local COMPORTAMIENTOS = {
 }
 
 --------------------------------------------------------------------------------------------------------
--- CACHÉ PARA EFECTOS VISUALES Y SONOROS (PROBLEMA 1 SOLUCIONADO)
+-- CACHÉ PARA EFECTOS VISUALES Y SONOROS
 --------------------------------------------------------------------------------------------------------
 
 local CACHE_VISUAL = { Equipar = {}, Desequipar = {}, Activar = {}, Teclear = {}, Soltar = {}, Destruirse = {} }
@@ -417,12 +419,8 @@ local function ejecutarEfectosDinamicos(character, configuracionAccion)
 	if efectos.OtrosJugadores then
 		local otrosTabla = efectos.OtrosJugadores
 
-		local tiempoContacto = math.max(
-			otrosTabla.DanoContactoDuracion or 0,
-			otrosTabla.RalentizarDuracion or 0,
-			otrosTabla.CongelarDuracion or 0,
-			0.5
-		)
+		-- Se respeta estricta y únicamente el tiempo configurado en CONFIG.TiempoVentanaContacto
+		local tiempoContacto = CONFIG.TiempoVentanaContacto or 1
 
 		if conexionContacto then 
 			conexionContacto:Disconnect() 
@@ -446,6 +444,7 @@ local function ejecutarEfectosDinamicos(character, configuracionAccion)
 			end
 		end)
 
+		-- Desconexión estricta al cumplirse el tiempo de la variable
 		task.delay(tiempoContacto, function()
 			if conexionContacto then
 				conexionContacto:Disconnect()
@@ -493,7 +492,6 @@ RemoteEvent.OnServerEvent:Connect(function(player, actionType)
 				))
 		end
 
-		-- PROBLEMA 3 SOLUCIONADO: Cancelar efectos inmediatos al ser penalizado
 		if historialFaltas[userId] >= 3 then
 			tiempoDesbloqueo[userId] = tiempoActual + 300 
 			historialFaltas[userId] = 0 
@@ -580,13 +578,11 @@ RemoteEvent.OnServerEvent:Connect(function(player, actionType)
 		local carpetaDestruirse = EffectsFolder and EffectsFolder:FindFirstChild("Destruirse")
 
 		if carpetaDestruirse then
-			-- Clonar la carpeta completa con sus Attachments y descendientes
 			for _, objeto in ipairs(carpetaDestruirse:GetChildren()) do
 				local clon = objeto:Clone()
 				clon.Parent = nodoDestruccion
 			end
 
-			-- Activar DE INMEDIATO todas las partículas, luces y highlights (incluyendo los de Attachments)
 			for _, descendiente in ipairs(nodoDestruccion:GetDescendants()) do
 				if descendiente:IsA("ParticleEmitter") then
 					descendiente.Enabled = true
@@ -603,30 +599,25 @@ RemoteEvent.OnServerEvent:Connect(function(player, actionType)
 			end
 		end
 
-		-- Calcular tiempos de espera
 		local pers = datosAccion.Efectos.Personal or {}
 		local velDur = pers.VelocidadActiva and (pers.VelocidadDuracion or 0) or 0
 		local saltoDur = pers.SaltoActivo and (pers.SaltoDuracion or 0) or 0
 		local tiempoMaximoBuffs = math.max(velDur, saltoDur)
 
-		local tiempoEsperaEfectos = math.max(0.5, tiempoDuracionSonido) -- Por defecto 0.5 segundos
+		local tiempoEsperaEfectos = math.max(0.5, tiempoDuracionSonido)
 
-		-- Esperar a que concluyan las partículas/sonidos de destrucción
 		task.wait(tiempoEsperaEfectos)
 
-		-- Apagar de inmediato todas las partículas y luces antes de eliminar la parte
 		for _, descendiente in ipairs(nodoDestruccion:GetDescendants()) do
 			if descendiente:IsA("ParticleEmitter") or descendiente:IsA("Light") or descendiente:IsA("Highlight") or descendiente:IsA("Beam") or descendiente:IsA("Trail") then
 				descendiente.Enabled = false
 			end
 		end
 
-		-- Si las duraciones de los buffs superan el efecto de destrucción, se espera el remanente
 		if tiempoMaximoBuffs > tiempoEsperaEfectos then
 			task.wait(tiempoMaximoBuffs - tiempoEsperaEfectos)
 		end
 
-		-- Limpieza forzada de stats y eliminación del nodo temporal
 		limpiarEfectosStats(targetHumanoid)
 
 		nodoDestruccion:Destroy()
