@@ -345,7 +345,7 @@ local COMPORTAMIENTOS = {
 }
 
 --------------------------------------------------------------------------------------------------------
--- CACHÉ PARA EFECTOS VISUALES Y SONOROS
+-- CACHÉ PARA EFECTOS VISUALES Y SONOROS (INCLUYE TRAILS EN ATTACHMENTS)
 --------------------------------------------------------------------------------------------------------
 
 local CACHE_VISUAL = { Equipar = {}, Desequipar = {}, Activar = {}, Teclear = {}, Soltar = {}, Destruirse = {} }
