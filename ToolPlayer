@@ -22,15 +22,15 @@ local CONFIG = {
 	EnableLogs = true,            -- Desactivar al publicar el juego
 
 	Timing = {
-		Activate = { ActionTime = 0.5, Cooldown = 1 },
-		PressKey = { ActionTime = 0.5, Cooldown = 1 }
+		Activate = { ActionTime = 1, Cooldown = 0.5 },
+		PressKey = { ActionTime = 1, Cooldown = 0.5 }
 	},
 
 	IDs = {
 		Equipar = nil,
 		Desequipar = nil,
-		Activate = "rbxassetid://121082437119737", 
-		PressKey = "rbxassetid://507776043" 
+		Activate = nil, 
+		PressKey = "rbxassetid:// (TU ID) " 
 	}
 }
 
